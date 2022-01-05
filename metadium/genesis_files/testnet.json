@@ -1,0 +1,19 @@
+{
+    "alloc": {
+      "0x0A181237Dc34Dd0806E37381F4Cf211148b63E07": {
+        "balance": "0x19d971e4fe8401e74000000"
+      },
+      "0x378360d4f25E6377f3da53F8cF09e9a258118528": {
+        "balance": "0x19d971e4fe8401e74000000"
+      },
+      "0x4346166711A64eDBa169005f2cCee4Cc18b73B2F": {
+        "balance": "0xcecb8f27f4200f3a000000"
+      },
+      "0x57C88A783406FcA315257Ea7bEE021bc96225394": {
+        "balance": "0x19d971e4fe8401e74000000"
+      },
+      "0xa07eC413aB0A6B15FDAE71eC5F73Eeb0A0Fd94D6": {
+        "balance": "0xcecb8f27f4200f3a000000"
+      }
+    }
+  }
