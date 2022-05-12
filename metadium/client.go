@@ -976,19 +976,19 @@ func (ec *Client) populateTransactions(
 ) ([]*RosettaTypes.Transaction, error) {
 	transactions := make(
 		[]*RosettaTypes.Transaction,
-		len(block.Transactions())+1, // include reward tx
+		0,
 	)
-
 	var rewards []*Reward
-	if err := json.Unmarshal(block.Rewards(), &rewards); err != nil {
-		return nil, err
+	if len(block.Rewards()) > 0  {
+		if err := json.Unmarshal(block.Rewards(), &rewards); err != nil {
+			return nil, err
+		}
+		transactions = append ( transactions, ec.blockRewardTransaction(
+			blockIdentifier,
+			rewards,
+		))
 	}
-
-	transactions[0] = ec.blockRewardTransaction(
-		blockIdentifier,
-		rewards,
-	)
-	for i, tx := range loadedTransactions {
+	for _, tx := range loadedTransactions {
 		transaction, err := ec.populateTransaction(
 			tx,
 		)
@@ -996,7 +996,7 @@ func (ec *Client) populateTransactions(
 			return nil, fmt.Errorf("%w: cannot parse %s", err, tx.Transaction.Hash().Hex())
 		}
 
-		transactions[i+1] = transaction
+		transactions = append (transactions,transaction)
 	}
 
 	return transactions, nil
