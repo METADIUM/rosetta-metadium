@@ -1,0 +1,25 @@
+[
+    {
+        "result": {
+            "failed": false,
+            "gas": 21000,
+            "returnValue": "",
+            "structLogs": []
+        }
+    }
+]
+[
+    {
+        "result": {
+            "from": "0x1b892f4bf95b25375d7e83a7d2e2641a4bdf3bfb",
+            "gas": "0x0",
+            "gasUsed": "0x0",
+            "input": "0x",
+            "output": "0x",
+            "time": "5.535µs",
+            "to": "0x2d74530c0c196de44d3906822053bf336f18a16e",
+            "type": "CALL",
+            "value": "0x1"
+        }
+    }
+]

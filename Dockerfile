@@ -33,7 +33,7 @@ ENV GOPATH /go
 ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
 RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" && chmod -R 777 "$GOPATH"
 
-# Compile gmet
+# # Compile gmet
 FROM golang-builder as gmet-builder
 
 # VERSION: go-metadium m0.9.7
@@ -41,18 +41,13 @@ RUN git clone https://github.com/metadium/go-metadium \
   && cd go-metadium \
   && git checkout ff365d19a5f6bb91805a183dcb0b39264806868c
 
-# Version: go-metadium m0.9.8_test                  
-# RUN git clone https://github.com/sadoci/go-metadium \
-# && cd go-metadium \
-# && git checkout dbdc2c097ac9260eb516fe77abfa91a94cee936d 
-
 RUN cd go-metadium \
   && make USE_ROCKSDB=NO gmet
 
 RUN mv go-metadium/build/bin/gmet /app/gmet \
   && rm -rf go-metadium
 
-Compile rosetta-metadium
+# Compile rosetta-metadium
 FROM golang-builder as rosetta-builder
 
 # Use native remote build context to build in any directory

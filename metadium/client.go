@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum"
 	"log"
 	"math"
 	"math/big"
@@ -28,7 +29,6 @@ import (
 	"time"
 
 	RosettaTypes "github.com/coinbase/rosetta-sdk-go/types"
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
@@ -43,10 +43,14 @@ import (
 )
 
 const (
-	gmetHTTPTimeout = 120 * time.Second
+	gmetHTTPTimeout = 30000 * time.Second
 
 	maxTraceConcurrency  = int64(16) // nolint:gomnd
 	semaphoreTraceWeight = int64(1)  // nolint:gomnd
+
+	// eip1559TxType is the EthTypes.Transaction.Type() value that indicates this transaction
+	// follows EIP-1559.
+	eip1559TxType = 2
 )
 
 // Client allows for querying a set of specific Ethereum endpoints in an
@@ -215,6 +219,7 @@ func (ec *Client) Block(
 	ctx context.Context,
 	blockIdentifier *RosettaTypes.PartialBlockIdentifier,
 ) (*RosettaTypes.Block, error) {
+
 	if blockIdentifier != nil {
 		if blockIdentifier.Hash != nil {
 			return ec.getParsedBlock(ctx, "eth_getBlockByHash", *blockIdentifier.Hash, true)
@@ -319,13 +324,16 @@ func (ec *Client) getBlock(
 	error,
 ) {
 	var raw json.RawMessage
+	//start := time.Now()
+	//log.Printf("getBlock(): 1.before CallContext - %s\n", time.Since(start))
+
 	err := ec.c.CallContext(ctx, &raw, blockMethod, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: block fetch failed", err)
 	} else if len(raw) == 0 {
 		return nil, nil, ethereum.NotFound
 	}
-
+	//log.Printf("getBlock(): 2.after CallContext - %s\n", time.Since(start))
 	// Decode header and transactions
 	var head types.Header
 	var body rpcBlock
@@ -335,18 +343,20 @@ func (ec *Client) getBlock(
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, nil, err
 	}
-
-	uncles, err := ec.getUncles(ctx, &head, &body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: unable to get uncles", err)
-	}
-
+	var uncles []*EthTypes.Header
+	/*
+		uncles, err := ec.getUncles(ctx, &head, &body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: unable to get uncles", err)
+		}
+	*/
+	//log.Printf("getBlock(): 3.before getBlockReceipts - %s\n", time.Since(start))
 	// Get all transaction receipts
 	receipts, err := ec.getBlockReceipts(ctx, body.Hash, body.Transactions)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: could not get receipts for %x", err, body.Hash[:])
 	}
-
+	//log.Printf("getBlock(): 4.After getBlockReceipts - %s\n", time.Since(start))
 	// Get block traces (not possible to make idempotent block transaction trace requests)
 	//
 	// We fetch traces last because we want to avoid limiting the number of other
@@ -362,7 +372,7 @@ func (ec *Client) getBlock(
 			return nil, nil, fmt.Errorf("%w: could not get traces for %x", err, body.Hash[:])
 		}
 	}
-
+	//log.Printf("getBlock(): 5.before making loadeTxs - %s\n", time.Since(start))
 	// Convert all txs to loaded txs
 	txs := make([]*types.Transaction, len(body.Transactions))
 	loadedTxs := make([]*loadedTransaction, len(body.Transactions))
@@ -374,20 +384,26 @@ func (ec *Client) getBlock(
 
 		loadedTxs[i] = tx.LoadedTransaction()
 		loadedTxs[i].Transaction = txs[i]
+
+		feeAmount, feeBurned, err := calculateGas(txs[i], receipt, head)
+		if err != nil {
+			return nil, nil, err
+		}
 		loadedTxs[i].FeeAmount = feeAmount
+		loadedTxs[i].FeeBurned = feeBurned
+
 		loadedTxs[i].Miner = MustChecksum(head.Coinbase.Hex())
 		loadedTxs[i].Receipt = receipt
 
 		// Continue if calls does not exist (occurs at genesis)
 		if !addTraces {
-
 			continue
 		}
 
 		loadedTxs[i].Trace = traces[i].Result
 		loadedTxs[i].RawTrace = rawTraces[i].Result
 	}
-
+	//log.Printf("getBlock(): 6.after making loadeTxs (len = %d) - %s\n", len(loadedTxs), time.Since(start))
 	return types.NewBlockWithHeader(&head).WithBody(txs, uncles), loadedTxs, nil
 }
 
@@ -421,46 +437,122 @@ func (ec *Client) getBlockTraces(
 	return calls, rawCalls, nil
 }
 
+type Receipt struct {
+	Type              uint8  `json:"type,omitempty"`
+	PostState         []byte `json:"root"`
+	Status            uint64 `json:"status"`
+	CumulativeGasUsed uint64 `json:"cumulativeGasUsed" gencodec:"required"`
+
+	TxHash          common.Hash    `json:"transactionHash" gencodec:"required"`
+	ContractAddress common.Address `json:"contractAddress"`
+	GasUsed         uint64         `json:"gasUsed" gencodec:"required"`
+
+	BlockHash        common.Hash `json:"blockHash,omitempty"`
+	TransactionIndex uint        `json:"transactionIndex"`
+}
+
+func (r Receipt) MarshalJSON() ([]byte, error) {
+	type Receipt struct {
+		Type              hexutil.Uint64 `json:"type,omitempty"`
+		PostState         hexutil.Bytes  `json:"root"`
+		Status            hexutil.Uint64 `json:"status"`
+		CumulativeGasUsed hexutil.Uint64 `json:"cumulativeGasUsed" gencodec:"required"`
+		TxHash            common.Hash    `json:"transactionHash" gencodec:"required"`
+		ContractAddress   common.Address `json:"contractAddress"`
+		GasUsed           hexutil.Uint64 `json:"gasUsed" gencodec:"required"`
+		BlockHash         common.Hash    `json:"blockHash,omitempty"`
+		// BlockNumber       *hexutil.Big   `json:"blockNumber,omitempty"`
+		TransactionIndex hexutil.Uint `json:"transactionIndex"`
+	}
+	var enc Receipt
+	enc.Type = hexutil.Uint64(r.Type)
+	enc.PostState = r.PostState
+	enc.Status = hexutil.Uint64(r.Status)
+	enc.CumulativeGasUsed = hexutil.Uint64(r.CumulativeGasUsed)
+	enc.TxHash = r.TxHash
+	enc.ContractAddress = r.ContractAddress
+	enc.GasUsed = hexutil.Uint64(r.GasUsed)
+	enc.BlockHash = r.BlockHash
+	// enc.BlockNumber = (*hexutil.Big)(r.BlockNumber)
+	enc.TransactionIndex = hexutil.Uint(r.TransactionIndex)
+	return json.Marshal(&enc)
+}
+
+func (r *Receipt) UnmarshalJSON(input []byte) error {
+	type Receipt struct {
+		Type              *hexutil.Uint64 `json:"type,omitempty"`
+		PostState         *hexutil.Bytes  `json:"root"`
+		Status            *hexutil.Uint64 `json:"status"`
+		CumulativeGasUsed *hexutil.Uint64 `json:"cumulativeGasUsed" gencodec:"required"`
+		TxHash            *common.Hash    `json:"transactionHash" gencodec:"required"`
+		ContractAddress   *common.Address `json:"contractAddress"`
+		GasUsed           *hexutil.Uint64 `json:"gasUsed" gencodec:"required"`
+		BlockHash         *common.Hash    `json:"blockHash,omitempty"`
+		TransactionIndex  *hexutil.Uint   `json:"transactionIndex"`
+	}
+	var dec Receipt
+	if err := json.Unmarshal(input, &dec); err != nil {
+		return err
+	}
+	if dec.Type != nil {
+		r.Type = uint8(*dec.Type)
+	}
+	if dec.PostState != nil {
+		r.PostState = *dec.PostState
+	}
+	if dec.Status != nil {
+		r.Status = uint64(*dec.Status)
+	}
+	if dec.CumulativeGasUsed == nil {
+		return errors.New("missing required field 'cumulativeGasUsed' for Receipt")
+	}
+	r.CumulativeGasUsed = uint64(*dec.CumulativeGasUsed)
+	if dec.TxHash == nil {
+		return errors.New("missing required field 'transactionHash' for Receipt")
+	}
+	r.TxHash = *dec.TxHash
+	if dec.ContractAddress != nil {
+		r.ContractAddress = *dec.ContractAddress
+	}
+	if dec.GasUsed == nil {
+		return errors.New("missing required field 'gasUsed' for Receipt")
+	}
+	r.GasUsed = uint64(*dec.GasUsed)
+	if dec.BlockHash != nil {
+		r.BlockHash = *dec.BlockHash
+	}
+	//if dec.BlockNumber != nil {
+	//	r.BlockNumber = (*big.Int)(dec.BlockNumber)
+	//}
+	if dec.TransactionIndex != nil {
+		r.TransactionIndex = uint(*dec.TransactionIndex)
+	}
+	return nil
+}
+
 func (ec *Client) getBlockReceipts(
 	ctx context.Context,
 	blockHash common.Hash,
 	txs []rpcTransaction,
-) ([]*types.Receipt, error) {
-	receipts := make([]*types.Receipt, len(txs))
+) ([]*Receipt, error) {
+	start := time.Now()
+	log.Printf("getBlockReceipts(): 1.Start - %s\n", time.Since(start))
+	receipts := make([]*Receipt, len(txs))
 	if len(txs) == 0 {
 		return receipts, nil
 	}
+	log.Printf("getBlockReceipts(): 2.after check Length of txs: %d - %s, hash: %s \n", len(txs), time.Since(start), blockHash.String())
 
-	reqs := make([]rpc.BatchElem, len(txs))
-	for i := range reqs {
-		reqs[i] = rpc.BatchElem{
-			Method: "eth_getTransactionReceipt",
-			Args:   []interface{}{txs[i].tx.Hash().Hex()},
-			Result: &receipts[i],
-		}
-	}
-	if err := ec.c.BatchCallContext(ctx, reqs); err != nil {
-		return nil, err
-	}
-	for i := range reqs {
-		if reqs[i].Error != nil {
-			return nil, reqs[i].Error
-		}
-		if receipts[i] == nil {
-			return nil, fmt.Errorf("got empty receipt for %x", txs[i].tx.Hash().Hex())
-		}
+	err := ec.c.CallContext(ctx, &receipts, "eth_getReceipts", blockHash)
 
-		if receipts[i].BlockHash != blockHash {
-			return nil, fmt.Errorf(
-				"%w: expected block hash %s for transaction but got %s",
-				ErrBlockOrphaned,
-				blockHash.Hex(),
-				receipts[i].BlockHash.Hex(),
-			)
-		}
+	if err != nil {
+		log.Printf("%+v: Could not get receipts", err)
 	}
 
-	return receipts, nil
+	tmp, err := json.Marshal(receipts)
+	log.Printf("[getBlockReceipts] receipts: %s", string(tmp))
+
+	return receipts, err
 }
 
 type rpcCall struct {
@@ -757,12 +849,13 @@ type loadedTransaction struct {
 	BlockNumber *string
 	BlockHash   *common.Hash
 	FeeAmount   *big.Int
+	FeeBurned   *big.Int // nil if no fees were burned
 	Miner       string
 	Status      bool
 
 	Trace    *Call
 	RawTrace json.RawMessage
-	Receipt  *types.Receipt
+	Receipt  *Receipt
 }
 
 func feeOps(tx *loadedTransaction) []*RosettaTypes.Operation {
@@ -784,13 +877,49 @@ func feeOps(tx *loadedTransaction) []*RosettaTypes.Operation {
 	}
 }
 
+func calculateGas(
+	tx *types.Transaction,
+	txReceipt *Receipt,
+	head types.Header,
+) (
+	*big.Int, *big.Int, error,
+) {
+	gasUsed := new(big.Int).SetUint64(txReceipt.GasUsed)
+	gasPrice, err := effectiveGasPrice(tx, head.BaseFee)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failure getting effective gas price", err)
+	}
+	feeAmount := new(big.Int).Mul(gasUsed, gasPrice)
+	var feeBurned *big.Int
+	if head.BaseFee != nil { // EIP-1559
+		feeBurned = new(big.Int).Mul(gasUsed, head.BaseFee)
+	}
+
+	return feeAmount, feeBurned, nil
+}
+
+// effectiveGasPrice returns the price of gas charged to this transaction to be included in the
+// block.
+func effectiveGasPrice(tx *EthTypes.Transaction, baseFee *big.Int) (*big.Int, error) {
+	if tx.Type() != eip1559TxType {
+		return tx.GasPrice(), nil
+	}
+	// For EIP-1559 the gas price is determined by the base fee & miner tip instead
+	// of the tx-specified gas price.
+	tip, err := tx.EffectiveGasTip(baseFee)
+	if err != nil {
+		return nil, err
+	}
+	return new(big.Int).Add(tip, baseFee), nil
+}
+
 // transactionReceipt returns the receipt of a transaction by transaction hash.
 // Note that the receipt is not available for pending transactions.
 func (ec *Client) transactionReceipt(
 	ctx context.Context,
 	txHash common.Hash,
-) (*types.Receipt, error) {
-	var r *types.Receipt
+) (*Receipt, error) {
+	var r *Receipt
 	err := ec.c.CallContext(ctx, &r, "eth_getTransactionReceipt", txHash)
 	if err == nil {
 		if r == nil {
@@ -801,7 +930,7 @@ func (ec *Client) transactionReceipt(
 	return r, err
 }
 
-//Start to Add Function (commit 56328e8f0855edcaf6385a7d850142d8ace3b849 rosetta-ethereum)
+// Start to Add Function (commit 56328e8f0855edcaf6385a7d850142d8ace3b849 rosetta-ethereum)
 func (ec *Client) blockByNumber(
 	ctx context.Context,
 	index *int64,
@@ -925,7 +1054,7 @@ func validateCallInput(params map[string]interface{}) (*GetCallInput, error) {
 	return &input, nil
 }
 
-//End to Add Function (commit 56328e8f0855edcaf6385a7d850142d8ace3b849 rosetta-ethereum)
+// End to Add Function (commit 56328e8f0855edcaf6385a7d850142d8ace3b849 rosetta-ethereum)
 func (ec *Client) getParsedBlock(
 	ctx context.Context,
 	blockMethod string,
@@ -934,11 +1063,12 @@ func (ec *Client) getParsedBlock(
 	*RosettaTypes.Block,
 	error,
 ) {
+	//log.Printf("getParsedBlock(): 1.Start getParsedBlock \n")
 	block, loadedTransactions, err := ec.getBlock(ctx, blockMethod, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: could not get block", err)
 	}
-
+	//log.Printf("getParsedBlock(): 2.after getBlock() len(loadedTxs) = %d\n", len(loadedTransactions))
 	blockIdentifier := &RosettaTypes.BlockIdentifier{
 		Hash:  block.Hash().String(),
 		Index: block.Number().Int64(),
@@ -951,12 +1081,12 @@ func (ec *Client) getParsedBlock(
 			Index: blockIdentifier.Index - 1,
 		}
 	}
-
+	//log.Printf("getParsedBlock(): 3.before populateTransactions \n")
 	txs, err := ec.populateTransactions(blockIdentifier, block, loadedTransactions)
 	if err != nil {
 		return nil, err
 	}
-
+	//log.Printf("getParsedBlock(): 4.after populateTransactions (txs = %d)\n", len(txs))
 	return &RosettaTypes.Block{
 		BlockIdentifier:       blockIdentifier,
 		ParentBlockIdentifier: parentBlockIdentifier,
@@ -978,14 +1108,28 @@ func (ec *Client) populateTransactions(
 		[]*RosettaTypes.Transaction,
 		0,
 	)
+	/*
+		// Compute reward transaction (block + uncle reward)
+		transactions[0] = ec.blockRewardTransaction(
+			blockIdentifier,
+			block.Coinbase().String(),
+			block.Uncles(),
+		)
+	*/
 	var rewards []*Reward
-	if len(block.Rewards()) > 0  {
+	if len(block.Rewards()) > 0 {
 		if err := json.Unmarshal(block.Rewards(), &rewards); err != nil {
 			return nil, err
 		}
-		transactions = append ( transactions, ec.blockRewardTransaction(
+		transactions = append(transactions, ec.blockRewardForAuthorityTransaction(
 			blockIdentifier,
 			rewards,
+		))
+	} else if block.Fees().Int64() > int64(0) {
+		transactions = append(transactions, ec.blockRewardForMinerTransaction(
+			blockIdentifier,
+			block.Coinbase().String(),
+			block.Fees(),
 		))
 	}
 	for _, tx := range loadedTransactions {
@@ -996,9 +1140,8 @@ func (ec *Client) populateTransactions(
 			return nil, fmt.Errorf("%w: cannot parse %s", err, tx.Transaction.Hash().Hex())
 		}
 
-		transactions = append (transactions,transaction)
+		transactions = append(transactions, transaction)
 	}
-
 	return transactions, nil
 }
 
@@ -1076,10 +1219,10 @@ func (ec *Client) miningReward(
 
 type Reward struct {
 	Addr   common.Address `json:"addr"`
-	Reward int64          `json:"reward"`
+	Reward *big.Int       `json:"reward"`
 }
 
-func (ec *Client) blockRewardTransaction(
+func (ec *Client) blockRewardForAuthorityTransaction(
 	blockIdentifier *RosettaTypes.BlockIdentifier,
 	rewards []*Reward,
 ) *RosettaTypes.Transaction {
@@ -1096,13 +1239,44 @@ func (ec *Client) blockRewardTransaction(
 					Address: MustChecksum(r.Addr.Hex()),
 				},
 				Amount: &RosettaTypes.Amount{
-					Value:    strconv.FormatInt(r.Reward, 10),
+					Value:    r.Reward.String(),
 					Currency: Currency,
 				},
 			}
 			ops = append(ops, miningRewardOp)
 		}
 	}
+	return &RosettaTypes.Transaction{
+		TransactionIdentifier: &RosettaTypes.TransactionIdentifier{
+			Hash: blockIdentifier.Hash,
+		},
+		Operations: ops,
+	}
+}
+
+func (ec *Client) blockRewardForMinerTransaction(
+	blockIdentifier *RosettaTypes.BlockIdentifier,
+	miner string,
+	fees *big.Int,
+) *RosettaTypes.Transaction {
+	var ops []*RosettaTypes.Operation
+
+	miningRewardOp := &RosettaTypes.Operation{
+		OperationIdentifier: &RosettaTypes.OperationIdentifier{
+			Index: 0,
+		},
+		Type:   BlockRewardOpType,
+		Status: RosettaTypes.String(SuccessStatus),
+		Account: &RosettaTypes.AccountIdentifier{
+			Address: MustChecksum(miner),
+		},
+		Amount: &RosettaTypes.Amount{
+			Value:    strconv.FormatInt(fees.Int64(), 10),
+			Currency: Currency,
+		},
+	}
+	ops = append(ops, miningRewardOp)
+
 	return &RosettaTypes.Transaction{
 		TransactionIdentifier: &RosettaTypes.TransactionIdentifier{
 			Hash: blockIdentifier.Hash,
@@ -1191,7 +1365,13 @@ func (t *graphqlBalance) UnmarshalJSON(input []byte) error {
 	t.Errors = dec.Errors
 	t.Data.Block.Hash = dec.Data.Block.Hash
 	t.Data.Block.Number = (int64)(dec.Data.Block.Number)
-
+	/*
+		if dec.Data.Block.Number != nil {
+			t.Data.Block.Number = (*big.Int)(dec.Data.Block.Number)
+		}else{
+			return errors.New("missing required field 'number'")
+		}
+	*/
 	if dec.Data.Block.Account.Balance != nil {
 		t.Data.Block.Account.Balance = (*big.Int)(dec.Data.Block.Account.Balance)
 	} else {
@@ -1245,6 +1425,8 @@ func (ec *Client) Balance(
 	account *RosettaTypes.AccountIdentifier,
 	block *RosettaTypes.PartialBlockIdentifier,
 ) (*RosettaTypes.AccountBalanceResponse, error) {
+	// log.Printf("request Balance Address: %s\n", account.Address)
+
 	blockQuery := ""
 	if block != nil {
 		if block.Hash != nil {
@@ -1253,7 +1435,9 @@ func (ec *Client) Balance(
 		if block.Hash == nil && block.Index != nil {
 			blockQuery = fmt.Sprintf("number: %d", *block.Index)
 		}
+
 	}
+	//log.Printf("request Balance Address: %s / %s \n", account.Address, blockQuery)
 
 	result, err := ec.g.Query(ctx, fmt.Sprintf(`{
 			block(%s){
@@ -1278,7 +1462,22 @@ func (ec *Client) Balance(
 	if len(bal.Errors) > 0 {
 		return nil, errors.New(RosettaTypes.PrintStruct(bal.Errors))
 	}
-
+	/*
+		balance, ok := new(big.Int).SetString(bal.Data.Block.Account.Balance[2:], 16)
+		if !ok {
+			return nil, fmt.Errorf(
+				"could not extract account balance from %s",
+				bal.Data.Block.Account.Balance,
+			)
+		}
+		nonce, ok := new(big.Int).SetString(bal.Data.Block.Account.Nonce[2:], 16)
+		if !ok {
+			return nil, fmt.Errorf(
+				"could not extract account nonce from %s",
+				bal.Data.Block.Account.Nonce,
+			)
+		}
+	*/
 	balance := bal.Data.Block.Account.Balance
 	nonce := bal.Data.Block.Account.Nonce
 	return &RosettaTypes.AccountBalanceResponse{
@@ -1330,6 +1529,7 @@ func (ec *Client) Call(
 	ctx context.Context,
 	request *RosettaTypes.CallRequest,
 ) (*RosettaTypes.CallResponse, error) {
+	//log.Printf("Call - %s \n", request.Method)
 	switch request.Method { // nolint:gocritic
 	case "eth_getBlockByNumber":
 		var input GetBlockByNumberInput
@@ -1361,7 +1561,7 @@ func (ec *Client) Call(
 		}
 
 		// We cannot use RosettaTypes.MarshalMap because gmet uses a custom
-		// marshaler to convert *types.Receipt to JSON.
+		// marshaler to convert *Receipt to JSON.
 		jsonOutput, err := receipt.MarshalJSON()
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s", ErrCallOutputMarshal, err.Error())

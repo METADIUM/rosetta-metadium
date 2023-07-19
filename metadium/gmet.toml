@@ -9,7 +9,7 @@ HTTPPort = 8588
 HTTPVirtualHosts = ["*"]
 GraphQLVirtualHosts = ["*"]
 HTTPModules = ["eth", "debug", "admin"] 
-IPCPath = ""
+IPCPath = "gmet.ipc"
 
 [Node.HTTPTimeouts]
 ReadTimeout = 120000000000

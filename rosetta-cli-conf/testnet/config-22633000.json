@@ -1,0 +1,43 @@
+{
+  "network": {
+    "blockchain": "Metadium",
+    "network": "Testnet"
+  },
+  "online_url": "http://localhost:8080",
+  "data_directory": "cli-data-new-22633000",
+  "http_timeout": 1000,
+  "max_retries": 30,
+  "max_online_connections": 128,
+  "max_reorg_depth": 0,
+  "tip_delay": 120,
+  "compression_disabled": true,
+  "construction": null,
+  "log_configuration": true,
+  "max_sync_concurrency": 1,
+  "all_in_memory_enabled": false,
+  "l0_in_memory_enabled": true,
+  "table_size": 10,
+  "data": {
+    "active_reconciliation_concurrency": 1,
+    "inactive_discrepancy_search_disabled": false,
+    "initial_balance_fetch_disabled": false,
+    "historical_balance_disabled": false,
+    "ignore_reconciliation_error": false,
+    "reconciliation_disabled": false,
+    "reconciliation_drain_disabled": false,
+    "balance_tracking_disabled": false,
+    "pruning_balance_disabled": true,
+    "pruning_block_disabled": false,
+    "log_blocks": false,
+    "log_transactions": false,
+    "log_balance_changes": false,
+    "log_reconciliations": false,
+    "end_conditions": {
+      "index": 38068000,
+      "reconciliation_coverage": {
+        "coverage": 0.70,
+        "from_tip": true
+      }
+    }
+  }
+}

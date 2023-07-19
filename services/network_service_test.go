@@ -125,8 +125,8 @@ func TestNetworkEndpoints_Online(t *testing.T) {
 		GenesisBlockIdentifier: metadium.MainnetGenesisBlockIdentifier,
 		CurrentBlockIdentifier: currentBlock,
 		CurrentBlockTimestamp:  currentTime,
-		Peers:      peers,
-		SyncStatus: syncStatus,
+		Peers:                  peers,
+		SyncStatus:             syncStatus,
 	}, networkStatus)
 
 	networkOptions, err := servicer.NetworkOptions(ctx, nil)
